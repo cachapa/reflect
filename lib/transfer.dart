@@ -4,18 +4,18 @@ import 'dart:io';
 import 'package:http/http.dart';
 import 'package:reflect/metadata.dart';
 
-import 'globals.dart';
 import 'rest_client.dart';
 
 class Transfer {
   final Uri address;
+  final String? credentials;
   final RestClient client;
 
-  Transfer(this.address) : client = RestClient();
+  Transfer(this.address, this.credentials) : client = RestClient(credentials);
 
   Future<void> createDir(DirectoryMetadata metadata) async {
     final url = address.replace(
-      path: '${address.path}/files/${metadata.relativePath}/',
+      path: '${address.path}/files/${metadata.path}/',
     );
     final request = Request('PUT', url);
     final response = await client.send(request);
@@ -27,13 +27,13 @@ class Transfer {
 
   Future<void> delete(Metadata metadata) async {
     final url = address.replace(
-      path: '${address.path}/files/${metadata.relativePath}',
+      path: '${address.path}/files/${metadata.path}',
     );
     final request = Request('DELETE', url);
     final response = await client.send(
       request
         ..headers.addAll({
-          'indexed': metadata.indexed.toIso8601String(),
+          'indexed': metadata.changed.toIso8601String(),
         }),
     );
     if (response.statusCode != 200) {
@@ -44,7 +44,7 @@ class Transfer {
 
   Future<void> download(FileMetadata metadata) async {
     final url = address.replace(
-      path: '${address.path}/files/${metadata.relativePath}',
+      path: '${address.path}/files/${metadata.path}',
     );
     final request = Request('GET', url);
     final response = await client.send(request);
@@ -56,8 +56,8 @@ class Transfer {
     final size = response.contentLength;
     print('⬇  $metadata…');
 
-    final path = '$basePath/${metadata.relativePath}';
-    final file = File('$path.reflect');
+    final path = '${metadata.path}';
+    final file = File('$path.reflecting');
     await file.parent.create(recursive: true);
 
     // var progress = 0;
@@ -78,14 +78,14 @@ class Transfer {
   }
 
   Future<void> upload(FileMetadata metadata) async {
-    final file = metadata.entity;
+    final file = metadata.entity('');
     if (!file.existsSync()) {
       print('⚠ Wanted to upload $metadata but the file does not exist');
       return;
     }
 
     final url = address.replace(
-      path: '${address.path}/files/${metadata.relativePath}',
+      path: '${address.path}/files/${metadata.path}',
     );
     print('⬆  $metadata…');
 
@@ -94,7 +94,7 @@ class Transfer {
     final request = StreamedRequest('PUT', url)
       ..headers.addAll({
         HttpHeaders.contentLengthHeader: '$size',
-        'indexed': metadata.indexed.toIso8601String(),
+        'indexed': metadata.changed.toIso8601String(),
         'modified': metadata.modified.toIso8601String(),
       });
 

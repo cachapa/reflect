@@ -2,147 +2,56 @@ import 'dart:io';
 
 import 'package:hive/hive.dart';
 
-import 'globals.dart';
 import 'util/extensions.dart';
 
-class DirectoryMetadata extends Metadata {
-  @override
-  Directory get entity => Directory('$basePath/$relativePath');
-
-  DirectoryMetadata(
-      String id, String relativePath, DateTime indexed, bool isDeleted)
-      : super(id, relativePath, indexed, isDeleted);
-
-  static Future<DirectoryMetadata> fromDirectory(Directory directory) async =>
-      DirectoryMetadata(
-        directory.relativePath(basePath).md5,
-        directory.relativePath(basePath),
-        DateTime.now(),
-        false,
-      );
-
-  @override
-  DirectoryMetadata asDeleted() =>
-      DirectoryMetadata(id, relativePath, DateTime.now(), true);
-
-  @override
-  bool represents(FileSystemEntity other) =>
-      other is Directory && other.path.endsWith(relativePath);
-
-  @override
-  bool operator ==(Object other) =>
-      other is DirectoryMetadata &&
-      relativePath == other.relativePath &&
-      isDeleted == other.isDeleted;
-
-  @override
-  int get hashCode => Object.hash(relativePath, isDeleted);
-
-  @override
-  String toString() => '${isDeleted ? '🗑️' : '📁'} $relativePath/';
-}
-
-class FileMetadata extends Metadata {
-  final DateTime modified;
-  final int? size;
-  final String? md5;
-
-  @override
-  File get entity => File('$basePath/$relativePath');
-
-  FileMetadata(String id, String relativePath, DateTime indexed,
-      DateTime modified, this.size, this.md5, bool isDeleted)
-      : modified = modified.toUtc(),
-        super(id, relativePath, indexed, isDeleted);
-
-  static Future<FileMetadata> fromFile(File file) async => FileMetadata(
-        file.relativePath(basePath).md5,
-        file.relativePath(basePath),
-        DateTime.now(),
-        file.lastModifiedSync(),
-        file.lengthSync(),
-        await file.md5,
-        false,
-      );
-
-  @override
-  FileMetadata asDeleted() => FileMetadata(
-      id, relativePath, DateTime.now(), modified, null, null, true);
-
-  @override
-  bool represents(FileSystemEntity other) =>
-      other is File &&
-      other.path.endsWith(relativePath) &&
-      other.lastModifiedSync().toUtc() == modified &&
-      other.lengthSync() == size;
-
-  @override
-  bool operator ==(other) =>
-      other is FileMetadata &&
-      relativePath == other.relativePath &&
-      isDeleted == other.isDeleted &&
-      size == other.size &&
-      md5 == other.md5;
-
-  @override
-  int get hashCode => Object.hash(relativePath, isDeleted, size, md5);
-
-  @override
-  Map<String, dynamic> toJson() => {
-        ...super.toJson(),
-        'modified': modified.toIso8601String(),
-        'size': size,
-        'md5': md5,
-      };
-
-  @override
-  String toString() =>
-      isDeleted ? '🗑️ $relativePath' : '📄 $relativePath (${size!.asBytes})';
-}
-
-abstract class Metadata extends Comparable<Metadata> {
-  final String id;
-  final String relativePath;
-  final DateTime indexed;
+sealed class Metadata implements Comparable<Metadata> {
+  final String path;
+  // When this entry was last changed in the file system
+  final DateTime changed;
   final bool isDeleted;
 
-  FileSystemEntity get entity;
-
-  Metadata(this.id, this.relativePath, DateTime indexed, this.isDeleted)
-      : indexed = indexed.toUtc();
+  Metadata(this.path, DateTime changed, this.isDeleted)
+      : changed = changed.normalize();
 
   static Metadata fromMap(Map<String, dynamic> map) {
-    final id = map['id'];
-    final relativePath = map['relative_path'];
-    final indexed = DateTime.parse(map['indexed']);
+    final path = map['path'];
+    final changed = DateTime.parse(map['changed']);
     final isDeleted = map['is_deleted'];
 
     return map.containsKey('md5')
-        ? FileMetadata(id, relativePath, indexed,
-            DateTime.parse(map['modified']), map['size'], map['md5'], isDeleted)
-        : DirectoryMetadata(id, relativePath, indexed, isDeleted);
+        ? FileMetadata(path, changed, DateTime.parse(map['modified']),
+            map['size'], map['md5'], isDeleted)
+        : DirectoryMetadata(path, changed, isDeleted);
   }
 
-  Metadata asDeleted();
+  /// Marks this entry as deleted.
+  /// Because it's impossible to know the exact deletion time, the modified date
+  /// is conservatively set to the last index time + 1ms.
+  Metadata deleted();
 
-  bool represents(FileSystemEntity other);
+  FileSystemEntity entity(String basePath);
+
+  bool represents(FileSystemEntity entity);
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'relative_path': relativePath,
-        'indexed': indexed.toIso8601String(),
+        'path': path,
+        'changed': changed.toIso8601String(),
         'is_deleted': isDeleted,
       };
 
   @override
   int compareTo(Metadata other) {
-    // Sort files before directories
+    // Sort directories before files
     if (runtimeType != other.runtimeType) {
-      return this is FileMetadata ? -1 : 1;
+      return this is DirectoryMetadata ? -1 : 1;
     }
-    // Sort undeleted files fist
+    // Sort deleted fist
     if (isDeleted != other.isDeleted) {
-      return isDeleted ? 1 : -1;
+      return isDeleted ? -1 : 1;
+    }
+    // Sort by path length if directory
+    if (this is DirectoryMetadata) {
+      return path.compareTo(other.path);
     }
     // Sort by size if file
     if (!isDeleted && this is FileMetadata) {
@@ -154,7 +63,103 @@ abstract class Metadata extends Comparable<Metadata> {
   }
 
   bool isNewer(Metadata? other) =>
-      other == null || this != other && indexed.isAfter(other.indexed);
+      other == null || this != other && (changed.isAfter(other.changed));
+}
+
+class DirectoryMetadata extends Metadata {
+  DirectoryMetadata(super.path, super.indexed, super.isDeleted);
+
+  static Future<DirectoryMetadata> fromDirectory(
+          String basePath, Directory directory) async =>
+      DirectoryMetadata(
+        directory.relativePath(basePath),
+        directory.statSync().changed,
+        false,
+      );
+
+  @override
+  DirectoryMetadata deleted() =>
+      DirectoryMetadata(path, changed.increment(), true);
+
+  @override
+  Directory entity(String basePath) => Directory('$basePath/$path');
+
+  @override
+  bool represents(FileSystemEntity other) =>
+      other is Directory && other.path.endsWith(path);
+
+  @override
+  bool operator ==(Object other) =>
+      other is DirectoryMetadata &&
+      path == other.path &&
+      isDeleted == other.isDeleted;
+
+  @override
+  int get hashCode => Object.hash(path, isDeleted);
+
+  @override
+  String toString() => '${isDeleted ? '🗑️' : '📁'} $path/';
+}
+
+class FileMetadata extends Metadata {
+  // Different from changed in that the modified time represents the data itself and survives file copies
+  final DateTime modified;
+  final int? size;
+  final String? md5;
+
+  FileMetadata(String path, DateTime changed, DateTime modified, this.size,
+      this.md5, bool isDeleted)
+      : modified = modified.normalize(),
+        super(path, changed, isDeleted);
+
+  static Future<FileMetadata> fromFile(String basePath, File file) async {
+    final stat = file.statSync();
+    return FileMetadata(
+      file.relativePath(basePath),
+      stat.changed,
+      stat.modified,
+      stat.size,
+      await file.md5,
+      false,
+    );
+  }
+
+  @override
+  FileMetadata deleted() =>
+      FileMetadata(path, DateTime.now(), changed.increment(), null, null, true);
+
+  @override
+  File entity(String basePath) => File('$basePath/$path');
+
+  @override
+  bool represents(FileSystemEntity entity) =>
+      entity is File &&
+      entity.path.endsWith(path) &&
+      entity.lastModifiedSync().normalize() == modified &&
+      entity.lengthSync() == size;
+
+  @override
+  bool operator ==(other) =>
+      other is FileMetadata &&
+      path == other.path &&
+      modified == other.modified &&
+      isDeleted == other.isDeleted &&
+      size == other.size &&
+      md5 == other.md5;
+
+  @override
+  int get hashCode => Object.hash(path, isDeleted, size, md5);
+
+  @override
+  Map<String, dynamic> toJson() => {
+        ...super.toJson(),
+        'modified': modified.toIso8601String(),
+        'size': size,
+        'md5': md5,
+      };
+
+  @override
+  String toString() => isDeleted ? '🗑️ $path' : '📄 $path (${size!.asBytes})';
 }
 
 class MetadataAdapter extends TypeAdapter<Metadata> {

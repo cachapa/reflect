@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -14,6 +15,8 @@ extension FileExtensions on File {
 }
 
 extension StringExtensions on String {
+  String get base64 => base64Encode(utf8.encode(this));
+
   String get md5 => Hash.md5String(this);
 
   String fullPath(String basePath) => '$basePath/$this';
@@ -41,4 +44,14 @@ extension IntExtensions on int {
 
 extension DoubleExtensions on double {
   String get asPercentage => '${(this * 100).toStringAsFixed(1)}%';
+}
+
+extension DateTimeExtension on DateTime {
+  DateTime normalize() => toUtc().copyWith(millisecond: 0, microsecond: 0);
+
+  DateTime increment() => add(Duration(milliseconds: 1));
+}
+
+extension MapX on Map {
+  String toJson() => jsonEncode(this);
 }

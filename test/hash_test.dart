@@ -20,7 +20,7 @@ void main() {
   });
 
   test('system hash', () async {
-    expect(await Hash.systemMd5(testFilePath), 'd23946cf1fd5d58880ea7a1dd5b5ac9d');
+    expect(Hash.systemMd5(testFilePath), 'd23946cf1fd5d58880ea7a1dd5b5ac9d');
   });
 
   test('native hash', () async {

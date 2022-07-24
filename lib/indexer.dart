@@ -3,90 +3,121 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:hive/hive.dart';
+import 'package:xdg_directories/xdg_directories.dart';
 
-import 'globals.dart';
 import 'metadata.dart';
 import 'util/extensions.dart';
 
-typedef ChangeCallback = void Function(Metadata metadata);
-
-const _indexDelay = 1;
-
 class Indexer {
-  final Box<Metadata> _manifest;
+  final Directory _dir;
+  late final Box<Metadata> _manifest;
+  final _knownMd5s = <String>{};
 
-  Stream<Metadata> get changes =>
-      _manifest.watch().map((e) => _manifest.get(e.key)!);
+  Future<Iterable<Metadata>>? _indexFuture;
+
+  String get path => _dir.path;
 
   Iterable<Metadata> get values => _manifest.values;
 
-  Indexer._(this._manifest) {
-    _monitor();
+  Indexer._(this._dir, this._manifest) {
+    _knownMd5s.addAll(values
+        .whereType<FileMetadata>()
+        .where((e) => !e.isDeleted)
+        .map((e) => e.md5!));
   }
 
-  static Future<Indexer> open({int indexDelay = 1}) async {
-    final home = Platform.environment['HOME'];
-    final configPath = '$home/.reflect';
-    final manifestFilename = basePath.md5;
+  static Future<Indexer> open(String path) async {
+    // Normalize path
+    final dir = Directory(Directory(path).resolveSymbolicLinksSync());
+
+    final configPath = '${configHome.path}/Reflect/manifests';
+    final manifestFilename = dir.path.md5;
 
     // Initialize Hive
     Hive.init('store');
     Hive.registerAdapter(MetadataAdapter(0));
-    final local =
+    final box =
         await Hive.openBox<Metadata>(manifestFilename, path: configPath);
 
-    print('Using manifest file ${local.path}');
+    print('Using manifest file ${box.path}');
 
-    return Indexer._(local);
+    return Indexer._(dir, box);
   }
 
-  Metadata? get(String id) => _manifest.get(id);
+  Directory getDirectory(DirectoryMetadata metadata) => metadata.entity(path);
+
+  File getFile(FileMetadata metadata) => metadata.entity(path);
+
+  Metadata? get(String path) => _manifest.get(path);
+
+  Future<void> put(Metadata entry) => _manifest.put(entry.path, entry);
 
   String toJson() => jsonEncode(_manifest.values.toList());
 
-  Future<void> _monitor() async {
-    while (true) {
-      await _index();
-      await Future.delayed(const Duration(seconds: _indexDelay));
-    }
+  /// Checks the local filesystem for changes.
+  /// If an index is already underway, it is returned instead of starting a new one.
+  Future<Iterable<Metadata>> index() {
+    _indexFuture ??= _index()..whenComplete(() => _indexFuture = null);
+    return _indexFuture!;
   }
 
-  Future<void> index() => _index();
+  /// Looks for an existing file with the same md5 and size
+  File? getDuplicate(FileMetadata metadata) {
+    // Quickly check if the md5 is known
+    if (_knownMd5s.contains(metadata.md5)) {
+      // Deep search for file metadata with the same md5
+      try {
+        return values
+            .whereType<FileMetadata>()
+            .firstWhere((m) => m.md5 == metadata.md5 && m.size == metadata.size)
+            .entity(path);
+      } catch (_) {}
+    }
+    return null;
+  }
 
-  Future<void> _index() async {
-    // Load the state as last seen
-    final localMap = _manifest.toMap()..removeWhere((_, e) => e.isDeleted);
+  Future<Iterable<Metadata>> _index() async {
+    final changes = <Metadata>[];
 
-    // Load the current state
-    final entries = Directory(basePath)
-        .listSync(recursive: true)
-        .where((e) => !(e is File && e.path.endsWith('.reflect')));
+    // Load the known state
+    final state = _manifest.toMap()..removeWhere((_, e) => e.isDeleted);
 
-    final entryPaths = entries.map((e) => e.relativePath(basePath)).toSet();
+    // List all entries, skip downloads in progress
+    final entries = await _dir
+        .list(recursive: true)
+        .where((e) => !e.path.endsWith('.reflecting'))
+        .toList();
+    final entryPaths = entries.map((e) => e.relativePath(path)).toSet();
+
     // Look for deleted items
     for (final metadata
-        in localMap.values.where((e) => !entryPaths.contains(e.relativePath))) {
-      final newMetadata = metadata.asDeleted();
-      // Mark as deleted in the local index
-      await _manifest.put(newMetadata.relativePath.md5, newMetadata);
+        in state.values.where((e) => !entryPaths.contains(e.path))) {
+      final newMetadata = metadata.deleted();
+      // Mark as deleted in the local state
+      changes.add(newMetadata);
     }
 
     // Look for new and modified files
     for (final entry in entries) {
-      final existing = localMap.remove(entry.relativePath(basePath).md5);
+      final existing = state.remove(entry.relativePath(path));
       if (existing == null || !existing.represents(entry)) {
-        try {
-          final metadata = entry is File
-              ? await FileMetadata.fromFile(entry)
-              : await DirectoryMetadata.fromDirectory(entry as Directory);
-          // Make sure file wasn't deleted while computing its md5
-          if (entry.existsSync()) {
-            await _manifest.put(metadata.id, metadata);
-          }
-        } catch (e) {
-          print(e);
-        }
+        final metadata = entry is File
+            ? await FileMetadata.fromFile(path, entry)
+            : await DirectoryMetadata.fromDirectory(path, entry as Directory);
+        changes.add(metadata);
+        print('🔎 $metadata');
       }
     }
+
+    // Apply changes to manifest
+    await _manifest.putAll({for (final c in changes) c.path: c});
+    _knownMd5s.addAll(changes
+        .whereType<FileMetadata>()
+        .where((e) => !e.isDeleted)
+        .map((e) => e.md5!));
+
+    return changes;
   }
+
+  Future<void> reset() => _manifest.clear();
 }

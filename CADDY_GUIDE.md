@@ -6,29 +6,27 @@ This page serves as a guide to set up *reflect* behind an internet-accessible HT
 
 ## Run reflect server
 
-Make sure you [follow the instructions](README.md) to install *reflect* in your machine;
+Make sure you [follow the instructions](README.md) to install *reflect* in your machine.
 
-Run reflect as a server under an arbitrary port and point it to the target directory:
-
+Once that's done, run reflect as a server under an arbitrary port and point it to the target directory:  
 `reflect /path/to/shared/directory -s -p 8123`
 
 ## Configure Caddy
 
-Set up Caddy in your platform, and once that's running, edit your Caddyfile (located in `/etc/caddy/Caddyfile` on most Linux distributions):
+Install Caddy in your platform and edit your Caddyfile (`/etc/caddy/Caddyfile` on most Linux distributions):
 
-The following example forwards HTTP connections from a subdomain to reflect:
-
+The following snippet forwards HTTP connections from a subdomain to reflect:  
 ```
 reflect.my-domain.com {
   reverse_proxy localhost:8123
 }
 ```
 
-To add [basic auth](https://en.wikipedia.org/wiki/Basic_access_authentication) with a simple username/password combo:
+You may want to add [basic auth](https://en.wikipedia.org/wiki/Basic_access_authentication) to secure your endpoint:
 
-1. For this example we will go with `username` and `password`
-2. Hash the password using `caddy hash-password`
-3. Copy the hashed password into your configuration:
+1. Create a username and password, for this example we will go with `username` and `password`
+2. Hash the password using the command `caddy hash-password`
+3. Copy the hashed password into your configuration:  
 ```
 reflect.my-domain.com {
   reverse_proxy localhost:8123
@@ -37,6 +35,6 @@ reflect.my-domain.com {
   }
 }
 ```
-4. Reload caddy and try it out: `caddy reload /etc/caddy/Caddyfile`
+4. Load the new config and try it out: `caddy reload --config /etc/caddy/Caddyfile`
 
 For troubleshooting or more complex setups you can consult the [official docs](https://caddyserver.com/docs/caddyfile/directives/basicauth).
